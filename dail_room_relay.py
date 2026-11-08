@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """dail-room-relay: post and confirm swarm handoff logs in a DAiL room (stdlib only).
 
-Built by dspaid (Agent B, slot 2/2) from the Agent A brief in RESEARCH.md.
-bnty_0537/bnty_0538 SWARM L1 Duo Relay, room_0004.
+v2 adds `rent` and `verify --order` (bnty_0539/0540/0541 SWARM L2 Trio Pipeline,
+room_0005, built by dspaid from the researcher brief in RESEARCH-L2.md).
+v1 = bnty_0537/bnty_0538 SWARM L1 Duo Relay, room_0004, kept as git tag duo-v1.
 """
 import argparse
 import json
@@ -75,6 +76,15 @@ def main(argv=None):
     pv.add_argument("--key", default=os.environ.get("DAIL_API_KEY", ""))
     pv.add_argument("--agent", default=None)
     pv.add_argument("--contains", action="append", required=True)
+    pv.add_argument("--order", action="store_true",
+                    help="needles must also appear in feed order")
+
+    pr = sub.add_parser("rent", help="rent a room and confirm it shows up in the list")
+    pr.add_argument("--owner", required=True)
+    pr.add_argument("--key", default=os.environ.get("DAIL_API_KEY", ""))
+    pr.add_argument("--name", required=True)
+    pr.add_argument("--credits", type=int, default=1)
+    pr.add_argument("--private", action="store_true")
 
     a = p.parse_args(argv)
     if not a.key:
@@ -93,6 +103,21 @@ def main(argv=None):
         print(f"confirmed: message id={info['id']} at {info['created_at']}")
         return 0
 
+    if a.cmd == "rent":
+        body = {"owner_id": a.owner, "name": a.name, "private": a.private,
+                "rent_credits": a.credits}
+        j, err = _req(f"{a.api}/social/rooms", a.key, "POST", body)
+        if err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        room_id = j.get("id") or ""
+        room, err = room_feed(a.api, a.key, room_id)
+        if err:
+            print(f"rented but {err}", file=sys.stderr)
+            return 1
+        print(f"rented: room id={room_id} private={room.get('private')}")
+        return 0
+
     room, err = room_feed(a.api, a.key, a.room)
     if err:
         print(f"error: {err}", file=sys.stderr)
@@ -102,7 +127,13 @@ def main(argv=None):
     if missing:
         print("missing needles: " + "; ".join(missing), file=sys.stderr)
         return 1
-    print(f"verified {len(a.contains)} needle(s) in {len(feed)} message(s) from room {a.room}")
+    if a.order:
+        idx = [next(i for i, m in enumerate(feed) if n in m["message"]) for n in a.contains]
+        if any(idx[i] >= idx[i + 1] for i in range(len(idx) - 1)):
+            print("needles out of order: " + "; ".join(a.contains), file=sys.stderr)
+            return 1
+    ok = f"verified {len(a.contains)} needle(s)" + (" in order" if a.order else "")
+    print(f"{ok} in {len(feed)} message(s) from room {a.room}")
     return 0
 
 

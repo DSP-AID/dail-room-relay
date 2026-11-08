@@ -14,7 +14,7 @@ class FakeResp(io.BytesIO):
         return False
 
 
-def patch(monkeypatch, rooms_payload=None, post_status=200):
+def patch(monkeypatch, rooms_payload=None, post_status=200, post_payload=None):
     calls = []
 
     def fake_urlopen(req, timeout=None):
@@ -22,6 +22,8 @@ def patch(monkeypatch, rooms_payload=None, post_status=200):
         if req.method == "POST":
             if post_status != 200:
                 raise urllib.error.HTTPError(req.full_url, post_status, "err", {}, io.BytesIO(b"boom"))
+            if req.full_url.endswith("/social/rooms") and post_payload is not None:
+                return FakeResp(json.dumps(post_payload).encode())
             return FakeResp(b'{"ok": true}')
         return FakeResp(json.dumps(rooms_payload).encode())
 
@@ -30,6 +32,16 @@ def patch(monkeypatch, rooms_payload=None, post_status=200):
 
 
 ROOMS = {"rooms": [{"id": "room_x", "messages": [
+    {"id": "m1", "from_id": "dspaid", "message": "HANDOFF: spec ready", "created_at": "2026-11-08T00:00:00Z"},
+]}]}
+
+ROOMS_ORDERED = {"rooms": [{"id": "room_x", "messages": [
+    {"id": "m1", "from_id": "dspaid", "message": "HANDOFF: spec ready", "created_at": "2026-11-08T00:00:00Z"},
+    {"id": "m2", "from_id": "dspaid", "message": "BUILD COMPLETE: tests green", "created_at": "2026-11-08T00:01:00Z"},
+]}]}
+
+ROOMS_REVERSED = {"rooms": [{"id": "room_x", "messages": [
+    {"id": "m2", "from_id": "dspaid", "message": "BUILD COMPLETE: tests green", "created_at": "2026-11-08T00:01:00Z"},
     {"id": "m1", "from_id": "dspaid", "message": "HANDOFF: spec ready", "created_at": "2026-11-08T00:00:00Z"},
 ]}]}
 
@@ -78,3 +90,28 @@ def test_room_not_found_exit2(monkeypatch, capsys):
     rc = r.main(["verify", "--room", "room_missing", "--key", "k", "--contains", "x"])
     assert rc == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_rent_happy(monkeypatch, capsys):
+    calls = patch(monkeypatch, {"rooms": [{"id": "room_new", "messages": [], "private": False}]},
+                  post_payload={"id": "room_new"})
+    rc = r.main(["rent", "--owner", "dspaid", "--name", "T", "--key", "k"])
+    assert rc == 0
+    assert "rented: room id=room_new" in capsys.readouterr().out
+    assert calls[0][0] == "POST" and calls[0][1].endswith("/social/rooms")
+
+
+def test_verify_order_ok(monkeypatch, capsys):
+    patch(monkeypatch, ROOMS_ORDERED)
+    rc = r.main(["verify", "--room", "room_x", "--key", "k", "--contains", "HANDOFF:",
+                 "--contains", "BUILD COMPLETE:", "--order"])
+    assert rc == 0
+    assert "in order" in capsys.readouterr().out
+
+
+def test_verify_order_violation(monkeypatch, capsys):
+    patch(monkeypatch, ROOMS_REVERSED)
+    rc = r.main(["verify", "--room", "room_x", "--key", "k", "--contains", "HANDOFF:",
+                 "--contains", "BUILD COMPLETE:", "--order"])
+    assert rc == 1
+    assert "out of order" in capsys.readouterr().err
